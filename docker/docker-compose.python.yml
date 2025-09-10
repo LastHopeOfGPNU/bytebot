@@ -1,0 +1,108 @@
+name: bytebot-python
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: bytebot-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_DB=bytebotdb
+    networks:
+      - bytebot-network
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  bytebot-desktop:
+    build:
+      context: ..
+      dockerfile: docker/python-desktop.Dockerfile
+    container_name: bytebot-desktop-python
+    restart: unless-stopped
+    shm_size: "2g"
+    hostname: computer
+    privileged: true
+    ports:
+      - "5900:5900"  # VNC
+      - "6080:6080"  # noVNC web interface
+      - "9990:9990"  # ByteBot Desktop API
+    environment:
+      - DISPLAY=:0
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/bytebotdb}
+      - BYTEBOT_DESKTOP_HOST=0.0.0.0
+      - BYTEBOT_DESKTOP_PORT=9990
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - bytebot-network
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+
+  bytebot-agent:
+    build:
+      context: ..
+      dockerfile: docker/python.Dockerfile
+    container_name: bytebot-agent-python
+    restart: unless-stopped
+    ports:
+      - "8000:8000"  # FastAPI server
+    environment:
+      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/bytebotdb}
+      - BYTEBOT_DESKTOP_BASE_URL=${BYTEBOT_DESKTOP_BASE_URL:-http://bytebot-desktop:9990}
+      - BYTEBOT_AGENT_HOST=0.0.0.0
+      - BYTEBOT_AGENT_PORT=8000
+      # AI API Keys
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      bytebot-desktop:
+        condition: service_started
+    networks:
+      - bytebot-network
+    command: ["bytebot-agent"]
+
+  bytebot-ui:
+    build:
+      context: ..
+      dockerfile: docker/python.Dockerfile
+    container_name: bytebot-ui-python
+    restart: unless-stopped
+    ports:
+      - "3000:3000"  # UI server
+    environment:
+      - BYTEBOT_AGENT_BASE_URL=${BYTEBOT_AGENT_BASE_URL:-http://bytebot-agent:8000}
+      - BYTEBOT_DESKTOP_VNC_URL=${BYTEBOT_DESKTOP_VNC_URL:-http://bytebot-desktop:6080}
+      - BYTEBOT_UI_HOST=0.0.0.0
+      - BYTEBOT_UI_PORT=3000
+      - BYTEBOT_UI_STATIC_DIR=${BYTEBOT_UI_STATIC_DIR:-/app/static}
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    depends_on:
+      - bytebot-agent
+    networks:
+      - bytebot-network
+    command: ["bytebot-ui"]
+    volumes:
+      - ../static:/app/static:ro  # Mount static files if available
+
+networks:
+  bytebot-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local

@@ -1,0 +1,114 @@
+name: bytebot-dev
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: bytebot-postgres-dev
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_USER=postgres
+      - POSTGRES_DB=bytebotdb
+    networks:
+      - bytebot-network
+    volumes:
+      - postgres_dev_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  bytebot-desktop:
+    build:
+      context: ..
+      dockerfile: docker/python-desktop.Dockerfile
+    container_name: bytebot-desktop-dev
+    restart: unless-stopped
+    shm_size: "2g"
+    hostname: computer
+    privileged: true
+    ports:
+      - "5900:5900"  # VNC
+      - "6080:6080"  # noVNC web interface
+      - "9990:9990"  # ByteBot Desktop API
+    environment:
+      - DISPLAY=:0
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/bytebotdb
+      - BYTEBOT_DESKTOP_HOST=0.0.0.0
+      - BYTEBOT_DESKTOP_PORT=9990
+      - LOG_LEVEL=DEBUG
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - bytebot-network
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ../python:/app:rw  # Mount source code for development
+
+  bytebot-agent:
+    build:
+      context: ..
+      dockerfile: docker/python.Dockerfile
+    container_name: bytebot-agent-dev
+    restart: unless-stopped
+    ports:
+      - "8000:8000"  # FastAPI server
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/bytebotdb
+      - BYTEBOT_DESKTOP_BASE_URL=http://bytebot-desktop:9990
+      - BYTEBOT_AGENT_HOST=0.0.0.0
+      - BYTEBOT_AGENT_PORT=8000
+      # AI API Keys
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      # Development settings
+      - LOG_LEVEL=DEBUG
+      - RELOAD=true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      bytebot-desktop:
+        condition: service_started
+    networks:
+      - bytebot-network
+    volumes:
+      - ../python:/app:rw  # Mount source code for development
+    command: ["uvicorn", "bytebot.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+  bytebot-ui:
+    build:
+      context: ..
+      dockerfile: docker/python.Dockerfile
+    container_name: bytebot-ui-dev
+    restart: unless-stopped
+    ports:
+      - "3000:3000"  # UI server
+    environment:
+      - BYTEBOT_AGENT_BASE_URL=http://bytebot-agent:8000
+      - BYTEBOT_DESKTOP_VNC_URL=http://bytebot-desktop:6080
+      - BYTEBOT_UI_HOST=0.0.0.0
+      - BYTEBOT_UI_PORT=3000
+      - BYTEBOT_UI_STATIC_DIR=/app/static
+      # Development settings
+      - LOG_LEVEL=DEBUG
+    depends_on:
+      - bytebot-agent
+    networks:
+      - bytebot-network
+    volumes:
+      - ../python:/app:rw  # Mount source code for development
+      - ../static:/app/static:ro  # Mount static files
+    command: ["uvicorn", "bytebot.ui.main:app", "--host", "0.0.0.0", "--port", "3000", "--reload"]
+
+networks:
+  bytebot-network:
+    driver: bridge
+
+volumes:
+  postgres_dev_data:
+    driver: local
